@@ -1,10 +1,9 @@
 import { faCompress, faExpand, faPause, faPlay, faVolumeMute, faVolumeUp } from "@fortawesome/free-solid-svg-icons"
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome"
-import { SyntheticEvent, useEffect, useRef, useState } from "react"
+import { MouseEvent, SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import styled from "styled-components"
 import { VideoPlayerProps } from "../types/VideoPlayer"
 
-// Format time in seconds to a string in the format of mm:ss or hh:mm:ss if the time is greater than an hour
 const formatTime = (time: number) => {
   const hours = Math.floor(time / 3600)
   const minutes = Math.floor((time - (hours * 3600)) / 60)
@@ -13,49 +12,79 @@ const formatTime = (time: number) => {
   return `${hours > 0 ? `${hours}:` : ""}${minutes < 10 ? `0${minutes}` : minutes}:${seconds < 10 ? `0${seconds}` : seconds}`
 }
 
-const sanitizeTime = (time: number) => {
-  return isNaN(time) ? 0 : time < 0 ? 0 : time
+const sanitizeTime = (time: number) => isNaN(time) ? 0 : time < 0 ? 0 : time
+
+const sanitizeVolume = (volume: number) => isNaN(volume) ? 0 : volume < 0 ? 0 : volume > 1 ? 1 : volume
+
+const sanitizePlaybackRate = (playbackRate: number) => isNaN(playbackRate) ? 1 : playbackRate <= 0 ? 0 : playbackRate > 16 ? 16 : playbackRate
+
+const baseState = {
+  isPlaying: false,
+  isMuted: false,
+  isFullscreen: false,
+  isHovered: true,
+  shouldTransitionHover: false,
+  visualProgress: 0,
+  actualProgress: 0,
+  buffer: [{
+    start: 0,
+    end: 0,
+  }],
+  duration: 0,
+  playbackRate: 1,
+  volume: 0.5,
+  isVolumeHovered: false,
+  dragState: {
+    value: [0, 0],
+    wasPlaying: false,
+  }
 }
 
 const VideoPlayer = (props: VideoPlayerProps) => {
   const videoElement = useRef<HTMLVideoElement>(null)
-  const [playerState, setPlayerState] = useState({
-    isPlaying: false,
-    isMuted: false,
-    isFullscreen: false,
-    isHovered: false,
-    shouldTransitionHover: false,
-    progress: 0,
-    duration: 0,
-    volume: 0.5,
-    isVolumeHovered: false,
-    dragState: [0, 0]
-  })
+  const combinedBaseState = useMemo(() => ({
+    ...baseState,
+    isMuted: props.muted ?? baseState.isMuted,
+    playbackRate: props.playbackRate ?? baseState.playbackRate,
+    volume: sanitizeVolume(props.volume ?? baseState.volume),
+  }), [props.muted, props.playbackRate, props.volume])
+  const [playerState, setPlayerState] = useState(combinedBaseState)
 
-  const getFormattedProgress = () => formatTime(playerState.progress)
+  const getFormattedProgress = () => formatTime(playerState.visualProgress)
   const getTotalTime = () => formatTime(playerState.duration)
+
+  useEffect(() => {
+    setPlayerState(combinedBaseState)
+  }, [combinedBaseState, props.source])
+
+  useEffect(() => {
+    props.onPlaybackRateChange && props.onPlaybackRateChange(playerState.playbackRate)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerState.playbackRate, props.onPlaybackRateChange])
 
   useEffect(() => {
     playerState.isPlaying
       ? videoElement.current!.play()
       : videoElement.current!.pause()
-  }, [playerState.isPlaying, videoElement])
+  }, [playerState.isPlaying])
 
   useEffect(() => {
-    playerState.isMuted
-      ? (videoElement.current!.muted = true)
-      : (videoElement.current!.muted = false)
-  }, [playerState.isMuted, videoElement])
+    videoElement.current!.playbackRate = sanitizePlaybackRate(playerState.playbackRate)
+  }, [playerState.playbackRate])
 
   useEffect(() => {
-    videoElement.current!.volume = playerState.volume
-  }, [playerState.volume, videoElement])
+    videoElement.current!.volume = sanitizeVolume(playerState.volume)
+  }, [playerState.volume])
 
   useEffect(() => {
     playerState.isFullscreen
       ? videoElement.current!.parentElement!.parentElement!.requestFullscreen()
       : document.fullscreenElement && document.exitFullscreen()
   }, [playerState.isFullscreen])
+
+  useEffect(() => {
+    videoElement.current!.currentTime = sanitizeTime(playerState.actualProgress)
+  }, [playerState.actualProgress])
 
   useEffect(() => {
     if (!playerState.isHovered) {
@@ -72,6 +101,20 @@ const VideoPlayer = (props: VideoPlayerProps) => {
       return () => clearTimeout(timeout)
     }
   }, [playerState.isHovered])
+
+  const seek = useCallback((time: number) => {
+    time = time < 0 ? 0 : time
+    time = time > playerState.duration ? playerState.duration : time
+    setPlayerState(state => ({
+      ...state,
+      actualProgress: Number(time),
+      visualProgress: Number(time)
+    }))
+  }, [playerState.duration])
+
+  useEffect(() => {
+    seek(playerState.dragState.value[0])
+  }, [playerState.dragState.value, seek])
 
   const togglePlaying = () => {
     setPlayerState({
@@ -101,30 +144,41 @@ const VideoPlayer = (props: VideoPlayerProps) => {
     })
   }
 
-  const seek = (time: number) => {
-    time = time < 0 ? 0 : time
-    time = time > playerState.duration ? playerState.duration : time
-    videoElement.current!.currentTime = Number(time)
-  }
-
-  // hnadle dragging the progress bar to seek the video relative to the duration and the parent container
-  const handleSeek = (e: SyntheticEvent<HTMLDivElement, DragEvent>) => {
+  const handleSeek = (e: MouseEvent<HTMLDivElement>, type: 'click' | 'drag') => {
+    type === 'drag' && (e as any).dataTransfer.setDragImage(e.currentTarget, -99999, -99999)
     const { clientX } = e.nativeEvent
-    const { left, width } = e.currentTarget.getBoundingClientRect()
-    const progress = (clientX - left) / width
-    seek(progress)
+    const { left, width } = type === 'click'
+      ? e.currentTarget.getBoundingClientRect()
+      : e.currentTarget.parentElement!.parentElement!.getBoundingClientRect()
+    const progress = (Math.min(Math.max(clientX, left), left + width) - left) / width
     setPlayerState({
       ...playerState,
-      dragState: [playerState.dragState[1], progress]
+      dragState: {
+        ...playerState.dragState,
+        value: [
+          type === 'click'
+            ? progress * playerState.duration
+            : playerState.dragState.value[1],
+          progress * playerState.duration]
+      }
     })
   }
+  const handleClickSeek = (e: MouseEvent<HTMLDivElement>) => handleSeek(e, 'click')
+  const handleDragSeek = (e: MouseEvent<HTMLDivElement>) => handleSeek(e, 'drag')
 
   const handleOnTimeUpdate = (e: SyntheticEvent<HTMLVideoElement>) => {
+    const { currentTime, duration, buffered } = e.currentTarget
+    const buffer = [...Array(buffered.length).keys()].map(index => ({
+      start: buffered.start(index),
+      end: buffered.end(index)
+    }))
     setPlayerState({
       ...playerState,
-      progress: sanitizeTime(e.currentTarget.currentTime),
-      duration: sanitizeTime(e.currentTarget.duration),
+      visualProgress: sanitizeTime(currentTime),
+      duration: sanitizeTime(duration),
+      buffer
     })
+    props.onTimeUpdate?.(sanitizeTime(currentTime))
   }
 
   const handleEnded = (e: SyntheticEvent<HTMLVideoElement>) => {
@@ -132,6 +186,7 @@ const VideoPlayer = (props: VideoPlayerProps) => {
       ...playerState,
       isPlaying: false,
     })
+    props.onEnded?.()
   }
 
   const toggleFullscreen = () => {
@@ -141,11 +196,13 @@ const VideoPlayer = (props: VideoPlayerProps) => {
     })
   }
 
-  const shouldShowOverlays = !playerState.isPlaying || playerState.isHovered || playerState.shouldTransitionHover
+  const shouldShowOverlays = useMemo(
+    () => !playerState.isPlaying || playerState.isHovered || playerState.shouldTransitionHover,
+    [playerState.isPlaying, playerState.isHovered, playerState.shouldTransitionHover]
+  )
 
   return (
     <VideoContainer
-    id={'test'}
       style={{
         width: props.width,
         height: props.height,
@@ -159,10 +216,24 @@ const VideoPlayer = (props: VideoPlayerProps) => {
       <VideoWrapper onClick={togglePlaying}>
         <Video
           ref={videoElement}
-          src={props.src}
-          onTimeUpdate={handleOnTimeUpdate}
+          preload="metadata"
+          poster={props.thumbnail}
+          loop={props.loop}
+          muted={playerState.isMuted}
+          onPlay={props.onPlay}
+          onPause={props.onPause}
           onEnded={handleEnded}
-        />
+          onTimeUpdate={handleOnTimeUpdate}
+          onDurationChange={handleOnTimeUpdate}
+          onVolumeChange={(e) => props.onVolumeChange?.(e.currentTarget.volume)}
+        >
+          {props.source instanceof Array ? props.source.map(({ src, type }, index) => (
+            <source key={index} src={src} type={type} />
+          )) : (
+            <source src={props.source.src} type={props.source.type} />
+          )}
+          Your browser does not support videos. Maybe try a different browser?
+        </Video>
       </VideoWrapper>
       {props.title && shouldShowOverlays && (
         <VideoTitle>{props.title}</VideoTitle>
@@ -201,18 +272,26 @@ const VideoPlayer = (props: VideoPlayerProps) => {
               fixedWidth
             />
           </PlayerVolumeContainer>
-          <PlayerBar>
+          <PlayerBar onClick={handleClickSeek}>
+            {playerState.buffer.map(({ start, end }, index) => (
+              <PlayerBarBuffer key={index} style={{ left: `${start / playerState.duration * 100}%`, width: `${((end - start) / playerState.duration) * 100}%` }} />
+            ))}
             <PlayerBarProgress style={{
-              width: `${sanitizeTime((playerState.progress / playerState.duration) * 100)}%`
+              width: `${sanitizeTime((playerState.visualProgress / playerState.duration) * 100)}%`
             }}>
-              <PlayerBarPlayHead draggable onDragStart={pause} onDrag={handleSeek} onDragEnd={() => {
-                seek(playerState.dragState[0])
-                setPlayerState({ ...playerState, dragState: [0, 0] })
-                play()
-              }} />
+              <PlayerBarPlayHead
+                draggable
+                onDragStart={pause}
+                onDrag={handleDragSeek}
+                onDragEnd={() => {
+                  seek(playerState.dragState.value[0])
+                  setPlayerState({ ...playerState, dragState: { ...playerState.dragState, value: [0, 0] } })
+                  play()
+                }}
+              />
             </PlayerBarProgress>
           </PlayerBar>
-          <PlayerTime>{getFormattedProgress()} / {getTotalTime()}</PlayerTime>
+          <PlayerTime>{`${getFormattedProgress()} / ${getTotalTime()}`}</PlayerTime>
           <PlayerIcon icon={playerState.isFullscreen ? faCompress : faExpand} onClick={toggleFullscreen} fixedWidth />
         </VideoOverlay>
       )}
@@ -253,6 +332,13 @@ const PlayerBarProgress = styled.div`
   border-radius: 6px;
 `
 
+const PlayerBarBuffer = styled.div`
+  position: absolute;
+  height: 6px;
+  background-color: rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+`
+
 const PlayerBar = styled.div`
   flex: 1;
   position: relative;
@@ -260,7 +346,6 @@ const PlayerBar = styled.div`
   height: 6px;
   background-color: #555;
   border-radius: 6px;
-  overflowX: hidden;
 
   &:hover {
     ${PlayerBarPlayHead} {

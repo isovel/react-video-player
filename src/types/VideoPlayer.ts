@@ -1,20 +1,26 @@
+type Source = {
+  src: string;
+  type?: string;
+}
+
 type VideoPlayerProps = {
-  src: string
-  thumbnail?: string // TODO: add thumbnail
-  title?: string // TODO: add title
+  source: Source | Source[]
+  thumbnail?: string
+  title?: string
   width?: number
   height?: number
-  autoplay?: boolean // TODO: add autoplay
+  autoplay?: boolean
   controls?: boolean
-  loop?: boolean // TODO: add loop
-  muted?: boolean // TODO: add muted
-  volume?: number // TODO: add volume
-  playbackRate?: number // TODO: add playbackRate
-  onPlay?: () => void // TODO: add onPlay
-  onPause?: () => void // TODO: add onPause
-  onEnded?: () => void // TODO: add onEnded
-  onTimeUpdate?: (time: number) => void // TODO: add onTimeUpdate
-  onVolumeChange?: (volume: number) => void // TODO: add onVolumeChange
+  loop?: boolean
+  muted?: boolean
+  volume?: number
+  playbackRate?: number
+  onPlay?: () => void
+  onPause?: () => void
+  onEnded?: () => void
+  onTimeUpdate?: (time: number) => void
+  onVolumeChange?: (volume: number) => void
+  onPlaybackRateChange?: (playbackRate: number) => void
   style?: React.CSSProperties
 }
 
